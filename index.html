@@ -5,6 +5,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>دکتۆر لەگەڵتە</title>
+<script>
+function showErr(m){var a=document.getElementById('app');if(a)a.innerHTML='<div style="padding:20px;color:#ff8f7e;direction:ltr;text-align:left;font-size:13px;word-break:break-word">Error: '+String(m).replace(/</g,'&lt;')+'</div>'}
+window.addEventListener('error',function(e){showErr(e.message||'unknown')});
+window.addEventListener('unhandledrejection',function(e){showErr((e.reason&&e.reason.message)||e.reason)});
+</script>
 <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;700;800&display=swap" rel="stylesheet">
 <style>
 :root{
@@ -112,7 +117,8 @@ const DOCTOR_EMAILS=["esmailomarsurchy@gmail.com","bahjatjalal120@gmail.com"];
 const CATS=['گەدە','سەرئێشە','سکچوون','سەرماخواردن','پێست','منداڵان','شەکرە و پەستان','ددان','تر'];
 const configured=fbOK&&!firebaseConfig.apiKey.startsWith("YOUR_");
 let auth,db;
-if(configured){const app=initializeApp(firebaseConfig);auth=getAuth(app);db=getFirestore(app);}
+let initErr=null;
+if(configured){try{const app=initializeApp(firebaseConfig);auth=getAuth(app);db=getFirestore(app);}catch(e){initErr=e;console.error(e)}}
 
 let posts=[],cfg={doctor:'دکتۆر'},user=null,isDoc=false,ready=false;
 let Q={post:{},mine:null,all:null};
@@ -321,7 +327,7 @@ await setDoc(doc(db,‘config’,‘app’),{doctor:n});toast(‘پاشەکەو�
 });
 
 /* ––––– دەستپێکردن ––––– */
-if(configured){
+if(configured&&!initErr){
 onSnapshot(query(collection(db,‘posts’),orderBy(‘date’,‘desc’)),s=>{posts=s.docs.map(d=>({id:d.id,…d.data()}));ready=true;soft()},e=>{console.error(e);ready=true;soft()});
 onSnapshot(doc(db,‘config’,‘app’),s=>{if(s.exists()&&s.data().doctor)cfg.doctor=s.data().doctor;soft()});
 onAuthStateChanged(auth,u=>{
@@ -334,6 +340,7 @@ render();
 });
 }
 render();
+if(initErr) showErr(initErr.message||initErr);
 </script>
 
 </body>
