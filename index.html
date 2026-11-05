@@ -83,6 +83,9 @@ nav svg{width:22px;height:22px}
 .toast{position:fixed;bottom:96px;inset-inline:16px;max-width:400px;margin:auto;background:var(--ink);color:var(--bg);padding:11px 16px;border-radius:12px;text-align:center;z-index:20;font-size:.9rem}
 .foot{font-size:.78rem;color:var(--muted);text-align:center;margin:26px 0 6px}
 .loading{text-align:center;color:var(--muted);padding:30px}
+.pic{display:block;max-width:100%;max-height:360px;border-radius:12px;margin-top:8px}
+.aud{width:100%;margin-top:8px}
+.pick{display:inline-block;margin:8px 0 0;cursor:pointer;font-size:.85rem}
 @media (prefers-reduced-motion:no-preference){.hero{transition:transform .15s}.hero:active{transform:scale(.98)}}
 </style>
 </head>
@@ -96,11 +99,11 @@ nav svg{width:22px;height:22px}
 <div id="toast" class="toast" hidden></div>
 
 <script type="module">
-let fbOK=true,initializeApp,getAuth,onAuthStateChanged,createUserWithEmailAndPassword,signInWithEmailAndPassword,signOut,sendPasswordResetEmail,getFirestore,collection,doc,addDoc,setDoc,updateDoc,deleteDoc,getDocs,onSnapshot,query,where,orderBy;
+let fbOK=true,initializeApp,getAuth,onAuthStateChanged,createUserWithEmailAndPassword,signInWithEmailAndPassword,signOut,sendPasswordResetEmail,getFirestore,collection,doc,addDoc,setDoc,updateDoc,deleteDoc,getDocs,onSnapshot,query,where,orderBy,getCountFromServer,increment;
 try{
   ({initializeApp}=await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js"));
   ({getAuth,onAuthStateChanged,createUserWithEmailAndPassword,signInWithEmailAndPassword,signOut,sendPasswordResetEmail}=await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js"));
-  ({getFirestore,collection,doc,addDoc,setDoc,updateDoc,deleteDoc,getDocs,onSnapshot,query,where,orderBy}=await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js"));
+  ({getFirestore,collection,doc,addDoc,setDoc,updateDoc,deleteDoc,getDocs,onSnapshot,query,where,orderBy,getCountFromServer,increment}=await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js"));
 }catch(e){fbOK=false;console.error(e)}
 
 /* ====== ١. لێرە زانیاری Firebase دابنێ ====== */
@@ -119,9 +122,10 @@ let auth,db;
 let initErr=null;
 if(configured){try{const app=initializeApp(firebaseConfig);auth=getAuth(app);db=getFirestore(app);}catch(e){initErr=e;console.error(e)}}
 
-let posts=[],cfg={doctor:'دکتۆر'},user=null,isDoc=false,ready=false;
+let posts=[],cfg={doctor:'دکتۆر'},user=null,isDoc=false,ready=false,authReady=false;
+let pend={},pendQ={img:''},unsubs=[],ST=null,viewed=new Set();
 let Q={post:{},mine:null,all:null};
-let V={name:'home',cat:'هەموو',id:null,dtab:'q',query:'',atab:'login'};
+let V={name:'home',cat:'هەموو',id:null,dtab:'q',query:'',atab:'register'};
 
 /* ---------- یارمەتیدەر ---------- */
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -138,6 +142,53 @@ const errMsg=e=>({
   'auth/too-many-requests':'هەوڵی زۆر درا، دواتر دووبارە هەوڵ بدەرەوە','auth/network-request-failed':'ئینتەرنێت نییە',
   'permission-denied':'ڕێگە پێنەدراوە'}[e?.code]||'هەڵەیەک ڕوویدا، دووبارە هەوڵ بدەرەوە');
 async function run(fn){try{await fn()}catch(e){console.error(e);toast(errMsg(e))}}
+
+/* ---------- وێنە و دەنگ ---------- */
+const safeImg=s=>typeof s==='string'&&s.startsWith('data:image/')?`<img class="pic" alt="" src="${esc(s)}">`:'';
+const safeAud=s=>typeof s==='string'&&s.startsWith('data:audio/')?`<audio class="aud" controls preload="metadata" src="${esc(s)}"></audio>`:'';
+const blobToData=b=>new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(b)});
+function compress(file){return new Promise((res,rej)=>{
+  const r=new FileReader();r.onerror=rej;
+  r.onload=()=>{const im=new Image();im.onerror=rej;
+    im.onload=()=>{
+      const sc=Math.min(1,900/Math.max(im.width,im.height)),w=Math.round(im.width*sc),h=Math.round(im.height*sc);
+      const c=document.createElement('canvas');c.width=w;c.height=h;c.getContext('2d').drawImage(im,0,0,w,h);
+      let q=.7,d=c.toDataURL('image/jpeg',q);
+      while(d.length>250000&&q>.3){q-=.1;d=c.toDataURL('image/jpeg',q)}
+      if(d.length>250000){const c2=document.createElement('canvas');c2.width=Math.round(w*.6);c2.height=Math.round(h*.6);c2.getContext('2d').drawImage(c,0,0,c2.width,c2.height);d=c2.toDataURL('image/jpeg',.5)}
+      res(d)};
+    im.src=r.result};
+  r.readAsDataURL(file)})}
+const pendOf=q=>pend[q.id]||(pend[q.id]={audio:q.answerAudio||'',img:q.answerImg||''});
+const qById=id=>(Q.all||[]).find(x=>x.id===id)||{id};
+function pvHtml(q){const p=pendOf(q);
+  return (p.audio?`${safeAud(p.audio)}<button type="button" class="linkbtn" data-rmaud="${q.id}">لابردنی دەنگ</button>`:'')+(p.img?`${safeImg(p.img)}<button type="button" class="linkbtn" data-rmimg="${q.id}">لابردنی وێنە</button>`:'')}
+function refreshPv(id){const el=document.getElementById('pv-'+id);if(el)el.innerHTML=pvHtml(qById(id))}
+const qpv=()=>pendQ.img?`${safeImg(pendQ.img)}<button type="button" class="linkbtn" data-rmqimg="1">لابردنی وێنە</button>`:'';
+
+let rec=null,rchunks=[],rtimer=null,rqid=null,rt0=0,rmime='';
+async function recToggle(qid,btn){
+  if(rec&&rec.state==='recording'){rec.stop();return}
+  try{
+    if(!window.MediaRecorder) throw new Error('no MediaRecorder');
+    const st=await navigator.mediaDevices.getUserMedia({audio:true});
+    rmime=['audio/mp4','audio/webm;codecs=opus','audio/webm'].find(t=>MediaRecorder.isTypeSupported(t))||'';
+    const opt={audioBitsPerSecond:24000};if(rmime)opt.mimeType=rmime;
+    rec=new MediaRecorder(st,opt);rchunks=[];rqid=qid;rt0=Date.now();
+    rec.ondataavailable=e=>{if(e.data&&e.data.size)rchunks.push(e.data)};
+    rec.onstop=async()=>{
+      clearInterval(rtimer);st.getTracks().forEach(t=>t.stop());
+      const b=document.querySelector(`[data-rec="${rqid}"]`);if(b)b.textContent='تۆمارکردنی دەنگ';
+      const blob=new Blob(rchunks,{type:rec.mimeType||rmime||'audio/mp4'});
+      const d=await blobToData(blob);
+      if(d.length>400000){toast('تۆمارەکە زۆر درێژە، کورتتری بکە');return}
+      pendOf(qById(rqid)).audio=d;refreshPv(rqid);
+    };
+    rec.start();
+    btn.textContent='وەستان';
+    rtimer=setInterval(()=>{const sec=Math.floor((Date.now()-rt0)/1000);const b=document.querySelector(`[data-rec="${rqid}"]`);if(b)b.textContent='وەستان '+sec+'s';if(sec>=90)rec.stop()},500);
+  }catch(e){console.error(e);toast('مایکرۆفۆن کار ناکات یان ڕێگەت نەداوە')}
+}
 
 /* ---------- خوێندنەوەی داتا ---------- */
 async function loadPostQs(id){
@@ -157,6 +208,14 @@ async function loadAll(){
   if(!isDoc) return;
   const s=await getDocs(collection(db,'questions'));
   Q.all=s.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>(a.answered-b.answered)||(b.date-a.date));soft();
+}
+
+async function loadStats(){
+  if(!isDoc) return;
+  const u=collection(db,'users');
+  const [a,b,c]=await Promise.all([getCountFromServer(u),getCountFromServer(query(u,where('lastSeen','>',Date.now()-864e5))),getDocs(collection(db,'stats'))]);
+  ST={users:a.data().count,active:b.data().count,views:Object.fromEntries(c.docs.map(d=>[d.id,d.data().views||0]))};
+  soft();
 }
 
 /* ---------- ڕووکارەکان ---------- */
@@ -188,8 +247,8 @@ function vHome(){
 function qHtml(q,showPost){
   const p=posts.find(x=>x.id===q.postId);
   return `<div class="q"><div class="who">${esc(q.name||'بێناو')} · ${fdate(q.date)} · ${q.public?'بۆ هەمووان':'تایبەت'}${showPost&&p?` · <button class="linkbtn" data-post="${p.id}">${esc(p.title)}</button>`:''}</div>
-  <div>${para(q.text)}</div>
-  ${q.answered?`<div class="ans"><b>وەڵامی ${esc(cfg.doctor)}</b><div>${para(q.answer)}</div></div>`:`<div class="pending">چاوەڕێی وەڵامی دکتۆرە…</div>`}</div>`;
+  <div>${para(q.text)}</div>${safeImg(q.img)}
+  ${q.answered?`<div class="ans"><b>وەڵامی ${esc(cfg.doctor)}</b>${q.answer?`<div>${para(q.answer)}</div>`:''}${safeImg(q.answerImg)}${safeAud(q.answerAudio)}</div>`:`<div class="pending">چاوەڕێی وەڵامی دکتۆرە…</div>`}</div>`;
 }
 function vPost(){
   const p=posts.find(x=>x.id===V.id); if(!p) return '<button class="back" data-go="home">‹ گەڕانەوە</button><div class="empty">ئەم بابەتە نەماوە.</div>';
@@ -197,6 +256,8 @@ function vPost(){
   const ask=user?`<form class="card" data-form="ask" data-id="${p.id}">
     <label for="qn">ناوت (ئارەزوومەندانە)</label><input id="qn" maxlength="40" autocomplete="off">
     <label for="qt">پرسیارەکەت</label><textarea id="qt" maxlength="600" required></textarea>
+    <label class="btn sm ghost pick">زیادکردنی وێنە<input type="file" accept="image/*" id="qimg" hidden></label>
+    <div id="qpv">${qpv()}</div>
     <label class="chk"><input type="checkbox" id="qp"><span>ڕێگە بدە پرسیار و وەڵامەکە بۆ هەمووان نیشان بدرێت (بێ ناوی ئیمەیل)</span></label>
     <p class="note">ئەگەر نەتکرد، تەنها تۆ و دکتۆر دەیبینن. ژمارەی مۆبایل و زانیاری تایبەت مەنووسە.</p>
     <button class="btn" type="submit">ناردنی پرسیار</button></form>`
@@ -221,19 +282,33 @@ function vMine(){
 }
 function vAuth(){
   const reg=V.atab==='register';
-  return `<div class="tabs" style="margin-top:20px"><button class="${!reg?'on':''}" data-atab="login">چوونە ژوورەوە</button><button class="${reg?'on':''}" data-atab="register">ئەکاونتی نوێ</button></div>
+  return `<div class="card" style="margin-top:20px"><b>بەخێربێیت</b><p class="note" style="font-size:.9rem;margin:4px 0 0">بۆ بینینی بابەتەکان و پرسیارکردن لە دکتۆر، سەرەتا ئەکاونتێک دروست بکە، یان بچۆ ژوورەوە.</p></div>
+  <div class="tabs"><button class="${!reg?'on':''}" data-atab="login">چوونە ژوورەوە</button><button class="${reg?'on':''}" data-atab="register">ئەکاونتی نوێ</button></div>
   <form class="card" data-form="auth"><label for="em">ئیمەیل</label><input id="em" type="email" autocomplete="email" required>
   <label for="pw">وشەی نهێنی</label><input id="pw" type="password" minlength="8" autocomplete="${reg?'new-password':'current-password'}" required>
   ${reg?'<p class="note">لانیکەم ٨ پیت.</p>':''}
   <button class="btn" type="submit">${reg?'دروستکردنی ئەکاونت':'چوونە ژوورەوە'}</button>
   ${reg?'':'<p class="note"><button type="button" class="linkbtn" data-act="reset">وشەی نهێنیم لەبیرچووە</button></p>'}</form>`;
 }
+function vStats(tabs){
+  if(!ST||!Q.all) return tabs+'<div class="loading">چاوەڕێ بە…</div>';
+  const qc={};Q.all.forEach(q=>{qc[q.postId]=(qc[q.postId]||0)+1});
+  const rows=posts.map(p=>({t:p.title,v:ST.views[p.id]||0,q:qc[p.id]||0}));
+  const list=(k)=>rows.filter(r=>r[k]>0).sort((a,b)=>b[k]-a[k]).slice(0,10).map(r=>`<div class="q" style="display:flex;justify-content:space-between;gap:10px"><span>${esc(r.t)}</span><b>${r[k]}</b></div>`).join('')||'<div class="empty">هێشتا داتا نییە.</div>';
+  const box=(n,l)=>`<div class="card" style="flex:1;margin:0;text-align:center"><div style="font-size:1.6rem;font-weight:800;color:var(--pri-d)">${n}</div><div class="note" style="margin:0">${l}</div></div>`;
+  return tabs+`<div style="display:flex;gap:10px;margin-bottom:10px">${box(ST.users,'ئەکاونت')}${box(ST.active,'چالاک لە ٢٤ کاتژمێر')}</div>
+  <div style="display:flex;gap:10px">${box(Q.all.length,'کۆی پرسیار')}${box(pendingCount(),'بێ وەڵام')}</div>
+  <div class="sec">زۆرترین کلیک لەسەر بابەت</div><div class="card">${list('v')}</div>
+  <div class="sec">زۆرترین پرسیار لەسەر بابەت</div><div class="card">${list('q')}</div>
+  <p class="note">ئەکاونتە کۆنەکان کاتێک دەژمێردرێن کە جارێکی تر بچنە ژوورەوە.</p>`;
+}
 function vAccount(){
   if(!configured) return `<div class="setup">Firebase هێشتا ڕێک نەخراوە.</div>`;
   if(!user) return vAuth();
   if(!isDoc) return `<div class="card" style="margin-top:20px"><b>ئەکاونتەکەت</b><p class="note" style="font-size:.9rem">${esc(user.email)}</p><button class="btn ghost" data-act="logout">دەرچوون</button></div>`;
   const n=pendingCount();
-  const tabs=`<div class="tabs"><button class="${V.dtab==='q'?'on':''}" data-dtab="q">پرسیارەکان${n?` (${n})`:''}</button><button class="${V.dtab==='new'?'on':''}" data-dtab="new">بابەتی نوێ</button><button class="${V.dtab==='set'?'on':''}" data-dtab="set">ڕێکخستن</button></div>`;
+  const tabs=`<div class="tabs"><button class="${V.dtab==='q'?'on':''}" data-dtab="q">پرسیارەکان${n?` (${n})`:''}</button><button class="${V.dtab==='new'?'on':''}" data-dtab="new">بابەتی نوێ</button><button class="${V.dtab==='stats'?'on':''}" data-dtab="stats">ئامار</button><button class="${V.dtab==='set'?'on':''}" data-dtab="set">ڕێکخستن</button></div>`;
+  if(V.dtab==='stats') return vStats(tabs);
   if(V.dtab==='new') return tabs+`<form class="card" data-form="post">
     <label for="pc">بەش</label><select id="pc">${CATS.map(c=>`<option>${esc(c)}</option>`).join('')}</select>
     <label for="pt">ناونیشان</label><input id="pt" maxlength="120" required>
@@ -247,7 +322,9 @@ function vAccount(){
   if(!l) return tabs+'<div class="loading">چاوەڕێ بە…</div>';
   return tabs+(l.length?l.map(q=>{const p=posts.find(x=>x.id===q.postId);
     return `<div class="card"><div class="note" style="margin:0">${p?esc(p.title):'بابەتی سڕاوە'}</div>${qHtml(q)}
-    <form data-form="answer" data-id="${q.id}"><textarea placeholder="وەڵامەکەت…" required>${esc(q.answer||'')}</textarea>
+    <form data-form="answer" data-id="${q.id}"><textarea placeholder="وەڵامەکەت…">${esc(q.answer||'')}</textarea>
+    <div id="pv-${q.id}">${pvHtml(q)}</div>
+    <button class="btn sm ghost" type="button" data-rec="${q.id}">تۆمارکردنی دەنگ</button> <label class="btn sm ghost pick">زیادکردنی وێنە<input type="file" accept="image/*" data-aimg="${q.id}" hidden></label><br>
     <button class="btn sm" type="submit">${q.answered?'نوێکردنەوەی وەڵام':'ناردنی وەڵام'}</button>
     ${q.answered?`<button class="btn sm ghost" type="button" data-pub="${q.id}">${q.public?'شاردنەوە لە هەمووان':'نیشاندان بۆ هەمووان'}</button>`:''}
     <button class="btn sm del" type="button" data-delq="${q.id}">سڕینەوە</button></form></div>`}).join(''):'<div class="empty">هێشتا هیچ پرسیارێک نەهاتووە.</div>');
@@ -255,20 +332,23 @@ function vAccount(){
 function render(){
   document.getElementById('hname').textContent='دکتۆر لەگەڵتە';
   const map={home:vHome,post:vPost,search:vSearch,mine:vMine,account:vAccount};
-  document.getElementById('app').innerHTML=map[V.name]();
-  renderNav();
+  const gated=configured&&!user;
+  document.getElementById('app').innerHTML=(configured&&!authReady)?'<div class="loading">چاوەڕێ بە…</div>':gated?vAuth():map[V.name]();
+  document.querySelector('nav').style.display=gated?'none':'';
+  if(!gated) renderNav();
 }
 function go(o){
+  if(o.name==='post'&&o.id!==V.id) pendQ.img='';
   V={...V,...o};render();window.scrollTo(0,0);
   if(!configured) return;
-  if(V.name==='post'&&V.id) loadPostQs(V.id);
+  if(V.name==='post'&&V.id){loadPostQs(V.id);if(!isDoc&&!viewed.has(V.id)){viewed.add(V.id);setDoc(doc(db,'stats',V.id),{views:increment(1)},{merge:true}).catch(console.error)}}
   if(V.name==='mine') loadMine();
-  if(V.name==='account'&&isDoc) loadAll();
+  if(V.name==='account'&&isDoc){loadAll();if(V.dtab==='stats') loadStats()}
 }
 
 /* ---------- ڕووداوەکان ---------- */
 document.addEventListener('click',e=>{
-  const t=e.target.closest('[data-go],[data-cat],[data-post],[data-dtab],[data-atab],[data-delpost],[data-delq],[data-pub],[data-act]'); if(!t) return;
+  const t=e.target.closest('[data-go],[data-cat],[data-post],[data-dtab],[data-atab],[data-delpost],[data-delq],[data-pub],[data-act],[data-rec],[data-rmaud],[data-rmimg],[data-rmqimg]'); if(!t) return;
   e.preventDefault();
   const d=t.dataset;
   if(d.go) return go({name:d.go});
@@ -282,7 +362,11 @@ document.addEventListener('click',e=>{
     if(!em) return toast('سەرەتا ئیمەیلەکەت بنووسە');
     return run(async()=>{await sendPasswordResetEmail(auth,em);toast('بەستەرێک بۆ ئیمەیلەکەت نێردرا')});
   }
+  if(d.rmqimg){pendQ.img='';const el=document.getElementById('qpv');if(el)el.innerHTML=qpv();return}
   if(!isDoc) return;
+  if(d.rec) return recToggle(d.rec,t);
+  if(d.rmaud){pendOf(qById(d.rmaud)).audio='';return refreshPv(d.rmaud)}
+  if(d.rmimg){pendOf(qById(d.rmimg)).img='';return refreshPv(d.rmimg)}
   if(d.delpost&&confirm('ئەم بابەتە بسڕدرێتەوە؟')) run(async()=>{await deleteDoc(doc(db,'posts',d.delpost));toast('سڕایەوە')});
   if(d.delq&&confirm('ئەم پرسیارە بسڕدرێتەوە؟')) run(async()=>{await deleteDoc(doc(db,'questions',d.delq));await loadAll()});
   if(d.pub) run(async()=>{const q=Q.all.find(x=>x.id===d.pub);await updateDoc(doc(db,'questions',d.pub),{public:!q.public});await loadAll()});
@@ -290,6 +374,14 @@ document.addEventListener('click',e=>{
 document.addEventListener('input',e=>{
   if(e.target.id==='sq'){V.query=e.target.value;const pos=e.target.selectionStart;
     document.getElementById('app').innerHTML=vSearch();const i=document.getElementById('sq');i.focus();i.setSelectionRange(pos,pos);}
+});
+document.addEventListener('change',async e=>{
+  const t=e.target,f=t.files&&t.files[0]; if(!f) return;
+  try{
+    if(t.id==='qimg'){pendQ.img=await compress(f);const el=document.getElementById('qpv');if(el)el.innerHTML=qpv()}
+    else if(t.dataset.aimg&&isDoc){pendOf(qById(t.dataset.aimg)).img=await compress(f);refreshPv(t.dataset.aimg)}
+  }catch(x){console.error(x);toast('وێنەکە ناخوێنرێتەوە')}
+  t.value='';
 });
 document.addEventListener('submit',e=>{
   const f=e.target.closest('form'); if(!f||!f.dataset.form) return; e.preventDefault();
@@ -303,16 +395,18 @@ document.addEventListener('submit',e=>{
   });
   if(k==='ask') busy(async()=>{
     const text=$('#qt').value.trim(); if(!text||!user) return;
-    await addDoc(collection(db,'questions'),{uid:user.uid,postId:f.dataset.id,name:$('#qn').value.trim().slice(0,40),text:text.slice(0,600),answer:'',answered:false,public:$('#qp').checked,date:Date.now()});
-    toast('پرسیارەکەت نێردرا');$('#qt').value='';await loadPostQs(f.dataset.id);Q.mine=null;
+    await addDoc(collection(db,'questions'),{uid:user.uid,postId:f.dataset.id,name:$('#qn').value.trim().slice(0,40),text:text.slice(0,600),img:pendQ.img||'',answer:'',answerImg:'',answerAudio:'',answered:false,public:$('#qp').checked,date:Date.now()});
+    pendQ.img='';toast('پرسیارەکەت نێردرا');$('#qt').value='';await loadPostQs(f.dataset.id);Q.mine=null;
   });
   if(k==='post'&&isDoc) busy(async()=>{
     await addDoc(collection(db,'posts'),{cat:$('#pc').value,title:$('#pt').value.trim(),body:$('#pb').value.trim(),warn:$('#pw2').value.trim(),date:Date.now()});
     toast('بڵاوکرایەوە');V.dtab='q';go({name:'home',cat:'هەموو'});
   });
   if(k==='answer'&&isDoc) busy(async()=>{
-    await updateDoc(doc(db,'questions',f.dataset.id),{answer:f.querySelector('textarea').value.trim(),answered:true});
-    toast('وەڵام نێردرا');await loadAll();
+    const id=f.dataset.id,text=f.querySelector('textarea').value.trim(),pd=pend[id]||{audio:'',img:''};
+    if(!text&&!pd.audio&&!pd.img) return toast('وەڵامێک بنووسە، یان دەنگ/وێنە زیاد بکە');
+    await updateDoc(doc(db,'questions',id),{answer:text,answerImg:pd.img||'',answerAudio:pd.audio||'',answered:true});
+    delete pend[id];toast('وەڵام نێردرا');await loadAll();
   });
   if(k==='cfg'&&isDoc) busy(async()=>{
     const n=$('#dn').value.trim()||'دکتۆر';
@@ -322,14 +416,17 @@ document.addEventListener('submit',e=>{
 
 /* ---------- دەستپێکردن ---------- */
 if(configured&&!initErr){
-  onSnapshot(query(collection(db,'posts'),orderBy('date','desc')),s=>{posts=s.docs.map(d=>({id:d.id,...d.data()}));ready=true;soft()},e=>{console.error(e);ready=true;soft()});
-  onSnapshot(doc(db,'config','app'),s=>{if(s.exists()&&s.data().doctor)cfg.doctor=s.data().doctor;soft()});
   onAuthStateChanged(auth,u=>{
-    user=u;isDoc=!!u&&DOCTOR_EMAILS.includes((u.email||'').toLowerCase());
-    Q.mine=null;Q.all=null;
-    if(V.name==='post'&&V.id) loadPostQs(V.id);
-    if(V.name==='mine') loadMine();
-    if(isDoc) loadAll();
+    user=u;authReady=true;isDoc=!!u&&DOCTOR_EMAILS.includes((u.email||'').toLowerCase());
+    unsubs.forEach(f=>f());unsubs=[];posts=[];ready=false;Q={post:{},mine:null,all:null};
+    if(u){
+      setDoc(doc(db,'users',u.uid),{createdAt:Date.parse(u.metadata&&u.metadata.creationTime)||Date.now(),lastSeen:Date.now()},{merge:true}).catch(console.error);
+      unsubs.push(onSnapshot(query(collection(db,'posts'),orderBy('date','desc')),s=>{posts=s.docs.map(d=>({id:d.id,...d.data()}));ready=true;soft()},e=>{console.error(e);ready=true;soft()}));
+      unsubs.push(onSnapshot(doc(db,'config','app'),s=>{if(s.exists()&&s.data().doctor)cfg.doctor=s.data().doctor;soft()},e=>console.error(e)));
+      if(V.name==='post'&&V.id) loadPostQs(V.id);
+      if(V.name==='mine') loadMine();
+      if(isDoc) loadAll();
+    }else V={...V,name:'home'};
     render();
   });
 }
